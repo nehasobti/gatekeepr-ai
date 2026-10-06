@@ -1,0 +1,36 @@
+# GitHub Actions workflow example for Gatekeeper AI Quality Gate
+name: Gatekeeper AI
+
+on:
+  pull_request:
+    branches: [qa, main]
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+  security-events: write
+
+jobs:
+  audit:
+    name: Gatekeeper AI PR Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gatekeeper AI Quality Gate
+        uses: tychon/gatekeeper-ai@v1
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GK_SLACK_WEBHOOK: ${{ secrets.GK_SLACK_WEBHOOK }}
+
+      - name: Upload Audit Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gatekeeper-report
+          path: gatekeeper-report/

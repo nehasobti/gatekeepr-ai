@@ -1,0 +1,29 @@
+name: 'Gatekeeper AI Quality Gate'
+description: 'Automated AI code quality and security gate for pull requests powered by Claude'
+author: 'Gatekeeper AI Team'
+
+inputs:
+  config:
+    description: 'Path to custom gatekeeper.yml configuration file'
+    required: false
+    default: 'gatekeeper.yml'
+  dry-run:
+    description: 'Run in dry-run mode without invoking Claude API'
+    required: false
+    default: 'false'
+  mock:
+    description: 'Use mock LLM for testing'
+    required: false
+    default: 'false'
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  env:
+    ANTHROPIC_API_KEY: ${{ env.ANTHROPIC_API_KEY }}
+    GITHUB_TOKEN: ${{ env.GITHUB_TOKEN }}
+    CONFIG_PATH: ${{ inputs.config }}
+
+branding:
+  icon: 'shield'
+  color: 'blue'

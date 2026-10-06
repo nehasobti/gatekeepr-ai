@@ -23,3 +23,8 @@ This document tracks decisions made during the implementation of Gatekeeper AI a
 - **Date**: 2026-10-06
 - **Decision**: Code Insights reports use report key `gatekeeper-ai` with `SECURITY` report type and bulk annotations (up to 100 per batch). Summary comments detect existing comments using `<!-- gatekeeper-summary-marker -->` and update via `PUT`.
 - **Rationale**: Standard Bitbucket Cloud REST API 2.0 pattern allowing native integration with Bitbucket branch restrictions.
+
+### 5. GitHub Integration, Check Runs, and SARIF Upload
+- **Date**: 2026-10-06
+- **Decision**: GitHub platform posts PR reviews (`event: COMMENT`) with line-level findings, creates a check run named `Gatekeeper AI` with conclusion `success` or `failure` for branch protection, and uploads gzipped, base64-encoded SARIF 2.1.0 payloads directly to `/repos/{owner}/{repo}/code-scanning/sarifs`.
+- **Rationale**: Native GitHub Actions integration enabling required status checks and security tab code scanning alerts.
