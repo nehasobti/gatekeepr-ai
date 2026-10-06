@@ -1,0 +1,18 @@
+name: Gatekeeper AI Quality Gate
+description: AI-powered quality gate and pull request auditor for security, reliability, and code quality.
+image: ghcr.io/tychon/gatekeeper-ai-pipe:1.0.0
+variables:
+  ANTHROPIC_API_KEY:
+    type: string
+    description: Anthropic Claude API key.
+  BITBUCKET_ACCESS_TOKEN:
+    type: string
+    description: Bitbucket repository or workspace access token with pull request write and commit status permissions.
+  CONFIG_PATH:
+    type: string
+    default: gatekeeper.yml
+    description: Path to the Gatekeeper configuration file.
+  MOCK_LLM:
+    type: boolean
+    default: false
+    description: Run with mock LLM for testing.

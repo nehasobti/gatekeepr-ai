@@ -1,0 +1,18 @@
+# Example bitbucket-pipelines.yml for Gatekeeper AI Quality Gate
+image: python:3.12-slim
+
+pipelines:
+  pull-requests:
+    '**':
+      - step:
+          name: Gatekeeper AI PR Audit
+          clone:
+            depth: full
+          script:
+            - pipe: docker://ghcr.io/tychon/gatekeeper-ai-pipe:1.0.0
+              variables:
+                ANTHROPIC_API_KEY: $ANTHROPIC_API_KEY
+                BITBUCKET_ACCESS_TOKEN: $BITBUCKET_ACCESS_TOKEN
+                GK_TEAMS_WEBHOOK: $GK_TEAMS_WEBHOOK
+          artifacts:
+            - gatekeeper-report/**

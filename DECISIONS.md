@@ -18,3 +18,8 @@ This document tracks decisions made during the implementation of Gatekeeper AI a
 - **Date**: 2026-10-06
 - **Decision**: For local mode, run `git diff --unified=N base...head` or `base head` using subprocess to generate standard unified diffs parsed by `unidiff`.
 - **Rationale**: Works reliably across Windows PowerShell and Linux without extra external git dependencies.
+
+### 4. Bitbucket Cloud Code Insights & Merge Blocking
+- **Date**: 2026-10-06
+- **Decision**: Code Insights reports use report key `gatekeeper-ai` with `SECURITY` report type and bulk annotations (up to 100 per batch). Summary comments detect existing comments using `<!-- gatekeeper-summary-marker -->` and update via `PUT`.
+- **Rationale**: Standard Bitbucket Cloud REST API 2.0 pattern allowing native integration with Bitbucket branch restrictions.

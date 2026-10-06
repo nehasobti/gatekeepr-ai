@@ -9,3 +9,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Phase 1: Core engine (local audit, config validation, diff loading and filtering, chunking, Claude client with forced schema, mock LLM, gate rules, Markdown/JSON/Console reporting).
+- Phase 2: Bitbucket Cloud integration (platform adapter, pull request diff loading, summary comment creation and in-place updates, inline comments, Code Insights report with annotations, Bitbucket Pipe definition, Dockerfile, pipeline example, branch-restrictions guide).

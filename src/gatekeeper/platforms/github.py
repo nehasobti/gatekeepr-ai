@@ -34,7 +34,7 @@ class GitHubPlatform(Platform):
             commit_sha=sha,
         )
 
-    def get_diff(self, _base: str | None = None, _head: str | None = None) -> str:
+    def get_diff(self, base: str | None = None, head: str | None = None) -> str:  # noqa: ARG002
         # Full implementation in Phase 3
         return ""
 
