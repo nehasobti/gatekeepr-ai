@@ -53,6 +53,12 @@ def audit(
         bool, typer.Option("--dry-run", help="Simulate audit without calling Claude")
     ] = False,
     mock: Annotated[bool, typer.Option("--mock", help="Use deterministic mock LLM")] = False,
+    publish_url: Annotated[
+        str | None, typer.Option("--publish-url", help="HTTP endpoint to POST audit report to")
+    ] = None,
+    publish_token: Annotated[
+        str | None, typer.Option("--publish-token", help="Bearer token for HTTP report publishing")
+    ] = None,
 ) -> None:
     """Run code audit on pull request or local commit range."""
     # Load configuration
@@ -81,6 +87,8 @@ def audit(
             head=head,
             dry_run=dry_run,
             mock=mock,
+            publish_url=publish_url,
+            publish_token=publish_token,
         )
     except Exception as e:
         console.print(f"[bold red]Audit Execution Error:[/bold red] {e}")

@@ -287,3 +287,39 @@ def test_audit_failure_triggers_all_notifications(
 
     # Verify Email notification sent
     assert mock_smtp_instance.send_message.called
+
+
+def test_audit_publishes_report_to_http_endpoint(
+    git_fixture_repo: Path,
+    respx_mock: respx.MockRouter,
+) -> None:
+    """Verify that audit sends report to HTTP publish endpoint with auth token."""
+    publish_url = "https://dashboard.example.com/api/reports"
+    post_route = respx_mock.post(publish_url).mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
+
+    platform = LocalPlatform(
+        base="main",
+        head="feature/clean",
+        repo_root=git_fixture_repo,
+    )
+    cfg = GatekeeperConfig()
+    cfg.outputs.publish_url = publish_url
+
+    res = run_audit(
+        platform=platform,
+        config=cfg,
+        base="main",
+        head="feature/clean",
+        mock=True,
+        repo_root=git_fixture_repo,
+        publish_token="my-secret-key-123",
+    )
+
+    assert res.verdict == Verdict.PASS
+    assert post_route.called
+    req = post_route.calls.last.request
+    assert req.headers["authorization"] == "Bearer my-secret-key-123"
+    body = json.loads(req.read().decode("utf-8"))
+    assert body["verdict"] == "PASS"

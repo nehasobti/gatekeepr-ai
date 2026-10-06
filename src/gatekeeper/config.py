@@ -99,6 +99,8 @@ class OutputsConfig(BaseModel):
     max_inline_comments: int = 25
     formats: list[str] = Field(default_factory=lambda: ["markdown", "html", "json", "sarif"])
     output_dir: str = "gatekeeper-report"
+    publish_url: str | None = None
+    publish_token_env: str = "GK_PUBLISH_TOKEN"
 
 
 class SlackConfig(BaseModel):

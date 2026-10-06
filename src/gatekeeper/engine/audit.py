@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import os
 import time
 from pathlib import Path
+
+import httpx
 
 from gatekeeper import __version__
 from gatekeeper.config import GatekeeperConfig
@@ -43,6 +46,8 @@ def run_audit(
     mock: bool = False,
     repo_root: Path | None = None,
     enable_cache: bool = True,
+    publish_url: str | None = None,
+    publish_token: str | None = None,
 ) -> AuditResult:
     """Run full audit pipeline."""
     start_time_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -358,6 +363,29 @@ def run_audit(
     platform.post_summary(result)
     platform.post_inline_comments(result)
     platform.set_status(result)
+
+    # HTTP POST publish to web dashboard if configured
+    target_publish_url = publish_url or config.outputs.publish_url
+    if target_publish_url:
+        token = publish_token or os.environ.get(config.outputs.publish_token_env, "")
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                resp = client.post(
+                    target_publish_url,
+                    json=result.model_dump(mode="json"),
+                    headers=headers,
+                )
+                if resp.is_success:
+                    logger.info(f"Audit report successfully published to {target_publish_url}")
+                else:
+                    logger.warning(
+                        f"Failed to publish report to {target_publish_url}: status {resp.status_code}"
+                    )
+        except Exception as e:
+            logger.warning(f"Error publishing report to {target_publish_url}: {e}")
 
     # Dispatch Notifications
     html_path = reports_written.get("html")
