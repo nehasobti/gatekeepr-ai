@@ -1,0 +1,277 @@
+"""Audit pipeline orchestrator executing the 11-stage audit flow."""
+
+from __future__ import annotations
+
+import concurrent.futures
+import time
+from pathlib import Path
+
+from gatekeeper.config import GatekeeperConfig
+from gatekeeper.diff.chunker import DiffChunk, chunk_diff
+from gatekeeper.diff.parser import DiffResult, parse_diff
+from gatekeeper.engine.merge import merge_and_dedupe_findings
+from gatekeeper.engine.rules import evaluate_gate
+from gatekeeper.engine.suppressions import apply_suppressions
+from gatekeeper.llm.client import PROMPT_VERSION, LLMClient
+from gatekeeper.llm.mock import MockLLMClient
+from gatekeeper.models import (
+    AuditMetadata,
+    AuditResult,
+    AuditSummary,
+    Finding,
+    Verdict,
+)
+from gatekeeper.platforms.base import Platform
+from gatekeeper.report import print_console_report, write_all_reports
+
+
+def run_audit(
+    platform: Platform,
+    config: GatekeeperConfig,
+    base: str | None = None,
+    head: str | None = None,
+    dry_run: bool = False,
+    mock: bool = False,
+    repo_root: Path | None = None,
+) -> AuditResult:
+    """Run full audit pipeline."""
+    start_time_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    start_monotonic = time.monotonic()
+    root = repo_root or Path.cwd()
+
+    # Stage 1: Detect context
+    context = platform.detect_context()
+    target_branch = context.target_branch or base
+
+    # Target branch filtering: if target_branch is defined and not in target_branches, skip
+    if (
+        target_branch
+        and config.review.target_branches
+        and target_branch not in config.review.target_branches
+    ):
+        duration = time.monotonic() - start_monotonic
+        meta = AuditMetadata(
+            tool_version="0.1.0",
+            prompt_version=PROMPT_VERSION,
+            model=config.model.name,
+            config_hash=config.compute_hash(),
+            pr_id=context.pr_id,
+            commit_sha=context.commit_sha,
+            target_branch=target_branch,
+            source_branch=context.source_branch or head,
+            start_time=start_time_iso,
+            duration_seconds=round(duration, 3),
+        )
+        res = AuditResult(
+            verdict=Verdict.SKIPPED,
+            findings=[],
+            summary=AuditSummary(),
+            metadata=meta,
+        )
+        print_console_report(res)
+        write_all_reports(res, config.outputs.output_dir, config.outputs.formats)
+        platform.set_status(res)
+        return res
+
+    # Stage 2: Load diff
+    try:
+        raw_diff = platform.get_diff(base=base, head=head)
+    except Exception as e:
+        duration = time.monotonic() - start_monotonic
+        meta = AuditMetadata(
+            start_time=start_time_iso,
+            duration_seconds=round(duration, 3),
+        )
+        res = AuditResult(
+            verdict=Verdict.ERROR,
+            error_message=f"Failed to load diff: {e}",
+            metadata=meta,
+        )
+        print_console_report(res)
+        return res
+
+    if not raw_diff.strip():
+        # Clean diff / no changes
+        duration = time.monotonic() - start_monotonic
+        meta = AuditMetadata(
+            tool_version="0.1.0",
+            prompt_version=PROMPT_VERSION,
+            model=config.model.name,
+            config_hash=config.compute_hash(),
+            pr_id=context.pr_id,
+            commit_sha=context.commit_sha,
+            target_branch=target_branch,
+            source_branch=context.source_branch or head,
+            start_time=start_time_iso,
+            duration_seconds=round(duration, 3),
+        )
+        res = AuditResult(
+            verdict=Verdict.PASS,
+            findings=[],
+            summary=AuditSummary(),
+            metadata=meta,
+        )
+        print_console_report(res)
+        write_all_reports(res, config.outputs.output_dir, config.outputs.formats)
+        platform.post_summary(res)
+        platform.set_status(res)
+        return res
+
+    # Stage 3: Filter diff
+    diff_res: DiffResult = parse_diff(
+        diff_text=raw_diff,
+        include_patterns=config.review.include,
+        exclude_patterns=config.review.exclude,
+        max_files=config.review.max_files,
+        max_diff_lines=config.review.max_diff_lines,
+    )
+
+    # Stage 4: Chunk diff
+    chunks: list[DiffChunk] = chunk_diff(
+        diff_files=diff_res.files,
+        max_tokens_per_chunk=12000,
+    )
+
+    total_est_tokens = sum(c.estimated_tokens for c in chunks)
+
+    # Handle dry run
+    if dry_run:
+        duration = time.monotonic() - start_monotonic
+        meta = AuditMetadata(
+            tool_version="0.1.0",
+            prompt_version=PROMPT_VERSION,
+            model=config.model.name,
+            config_hash=config.compute_hash(),
+            pr_id=context.pr_id,
+            commit_sha=context.commit_sha,
+            target_branch=target_branch,
+            source_branch=context.source_branch or head,
+            start_time=start_time_iso,
+            duration_seconds=round(duration, 3),
+            input_tokens=total_est_tokens,
+            skipped_files=diff_res.skipped_files,
+            extra={
+                "dry_run": True,
+                "chunk_count": len(chunks),
+                "reviewed_files": [f.path for f in diff_res.files],
+            },
+        )
+        res = AuditResult(
+            verdict=Verdict.PASS,
+            findings=[],
+            summary=AuditSummary(),
+            metadata=meta,
+        )
+        print_console_report(res)
+        return res
+
+    # Initialize LLM client
+    llm: LLMClient | MockLLMClient
+    if mock:
+        llm = MockLLMClient(config=config)
+    else:
+        try:
+            llm = LLMClient(config=config)
+        except Exception as e:
+            verdict = Verdict.PASS if not config.gate.fail_on_llm_error else Verdict.ERROR
+            duration = time.monotonic() - start_monotonic
+            meta = AuditMetadata(
+                tool_version="0.1.0",
+                prompt_version=PROMPT_VERSION,
+                model=config.model.name,
+                config_hash=config.compute_hash(),
+                start_time=start_time_iso,
+                duration_seconds=round(duration, 3),
+            )
+            res = AuditResult(
+                verdict=verdict,
+                error_message=f"LLM initialization failed: {e}",
+                metadata=meta,
+            )
+            print_console_report(res)
+            return res
+
+    # Stage 6: Claude passes (security, quality)
+    passes = config.review.passes or ["security", "quality"]
+    raw_findings_by_pass: list[list[Finding]] = []
+
+    def review_task(chunk: DiffChunk, p_name: str) -> list[Finding]:
+        return llm.review_chunk(
+            chunk_content=chunk.content,
+            pass_name=p_name,
+            valid_lines=chunk.file_valid_lines,
+        )
+
+    # Concurrently execute chunks (max 4 concurrent)
+    tasks: list[tuple[DiffChunk, str]] = [(chunk, p_name) for p_name in passes for chunk in chunks]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, max(1, len(tasks)))) as executor:
+        future_to_task = {executor.submit(review_task, ch, p): (ch, p) for ch, p in tasks}
+        for future in concurrent.futures.as_completed(future_to_task):
+            try:
+                pass_findings = future.result()
+                raw_findings_by_pass.append(pass_findings)
+            except Exception as e:
+                if config.gate.fail_on_llm_error:
+                    duration = time.monotonic() - start_monotonic
+                    res = AuditResult(
+                        verdict=Verdict.ERROR,
+                        error_message=f"Review pass failed: {e}",
+                        metadata=AuditMetadata(
+                            start_time=start_time_iso,
+                            duration_seconds=round(duration, 3),
+                        ),
+                    )
+                    print_console_report(res)
+                    return res
+
+    # Stage 8: Merge and dedupe
+    merged_findings = merge_and_dedupe_findings(raw_findings_by_pass)
+
+    # Stage 9: Suppress
+    active_findings, dropped_suppressed = apply_suppressions(
+        findings=merged_findings,
+        suppressions_config=config.suppressions,
+        repo_root=root,
+    )
+
+    # Stage 10: Gate
+    gate_verdict, violations = evaluate_gate(active_findings, config.gate)
+
+    duration = time.monotonic() - start_monotonic
+    tracker = llm.tracker
+    meta = AuditMetadata(
+        tool_version="0.1.0",
+        prompt_version=PROMPT_VERSION,
+        model=config.model.name,
+        config_hash=config.compute_hash(),
+        pr_id=context.pr_id,
+        commit_sha=context.commit_sha,
+        target_branch=target_branch,
+        source_branch=context.source_branch or head,
+        start_time=start_time_iso,
+        duration_seconds=round(duration, 3),
+        input_tokens=tracker.input_tokens,
+        output_tokens=tracker.output_tokens,
+        cached_tokens=tracker.total_cached,
+        estimated_cost_usd=tracker.calculate_cost_usd(),
+        skipped_files=diff_res.skipped_files,
+        dropped_findings_count=len(dropped_suppressed),
+        extra={"gate_violations": violations},
+    )
+
+    result = AuditResult(
+        verdict=gate_verdict,
+        findings=active_findings,
+        summary=AuditSummary.from_findings(active_findings),
+        metadata=meta,
+    )
+
+    # Stage 11: Publish
+    print_console_report(result)
+    write_all_reports(result, config.outputs.output_dir, config.outputs.formats)
+    platform.post_summary(result)
+    platform.post_inline_comments(result)
+    platform.set_status(result)
+
+    return result

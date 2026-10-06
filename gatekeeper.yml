@@ -1,0 +1,62 @@
+# gatekeeper.yml - Gatekeeper AI configuration
+version: 1
+
+model:
+  provider: anthropic
+  name: claude-sonnet-latest
+  max_output_tokens: 4096
+  temperature: 0.0
+
+review:
+  passes: [security, quality]
+  target_branches: [qa, main]
+  include: ["**/*"]
+  exclude: ["**/*.lock", "**/dist/**", "**/vendor/**", "**/*.min.js", "**/migrations/**"]
+  max_files: 60
+  max_diff_lines: 3000
+  context_lines: 20
+  language_hints: auto
+  custom_rules:
+    - "All SQL must use parameterised queries."
+    - "No logging of personal data (email, phone, tax code)."
+
+budget:
+  max_input_tokens_per_run: 200000
+  on_budget_exceeded: warn
+
+scanners:
+  semgrep: { enabled: true, config: "p/owasp-top-ten" }
+  bandit: { enabled: auto }
+  gitleaks: { enabled: true }
+  sonarqube: { enabled: false, url_env: SONAR_HOST_URL, token_env: SONAR_TOKEN, project_key: "" }
+  triage_with_llm: true
+
+gate:
+  fail_on:
+    critical: 1
+    high: 1
+    medium: 10
+  min_confidence: medium
+  fail_on_scanner_error: false
+  fail_on_llm_error: true
+
+suppressions:
+  inline_marker: "gatekeeper-ignore"
+  baseline_file: .gatekeeper/baseline.json
+
+outputs:
+  pr_comment: summary_and_inline
+  max_inline_comments: 25
+  formats: [markdown, html, json, sarif]
+  output_dir: gatekeeper-report
+
+notify:
+  on: [fail, error]
+  slack: { webhook_env: GK_SLACK_WEBHOOK }
+  teams: { webhook_env: GK_TEAMS_WEBHOOK }
+  email:
+    smtp_host_env: GK_SMTP_HOST
+    smtp_user_env: GK_SMTP_USER
+    smtp_password_env: GK_SMTP_PASSWORD
+    from: gatekeeper@example.com
+    to: [qa-lead@example.com]

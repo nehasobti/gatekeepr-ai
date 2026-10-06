@@ -1,0 +1,11 @@
+# Changelog
+
+All notable changes to Gatekeeper AI will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+- Phase 1: Core engine (local audit, config validation, diff loading and filtering, chunking, Claude client with forced schema, mock LLM, gate rules, Markdown/JSON/Console reporting).
