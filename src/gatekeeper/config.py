@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from gatekeeper.models import Confidence
 
@@ -110,13 +110,17 @@ class TeamsConfig(BaseModel):
 
 
 class EmailConfig(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     smtp_host_env: str = "GK_SMTP_HOST"
     smtp_user_env: str = "GK_SMTP_USER"
     smtp_password_env: str = "GK_SMTP_PASSWORD"
-    from_address: str = Field(default="gatekeeper@example.com", alias="from")
+    from_address: str = Field(
+        default="gatekeeper@example.com",
+        validation_alias="from",
+        serialization_alias="from",
+    )
     to: list[str] = Field(default_factory=lambda: ["qa-lead@example.com"])
-
-    model_config = {"populate_by_name": True}
 
 
 class NotifyConfig(BaseModel):

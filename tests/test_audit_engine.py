@@ -1,9 +1,13 @@
 """Integration tests for audit pipeline on git fixture repositories."""
 
+import json
 import subprocess
 from pathlib import Path
+from unittest.mock import MagicMock
 
+import httpx
 import pytest
+import respx
 
 from gatekeeper.config import GatekeeperConfig
 from gatekeeper.engine.audit import run_audit
@@ -143,3 +147,94 @@ def test_audit_dry_run_mode(git_fixture_repo: Path) -> None:
 
     assert res.verdict == Verdict.PASS
     assert res.metadata.extra.get("dry_run") is True
+
+
+def test_audit_rerun_on_unchanged_code_uses_cache(git_fixture_repo: Path) -> None:
+    """Verify that auditing unchanged code twice hits the chunk result cache."""
+    platform = LocalPlatform(
+        base="main",
+        head="feature/vulnerable",
+        repo_root=git_fixture_repo,
+    )
+    cfg = GatekeeperConfig()
+    cfg.review.target_branches = ["main"]
+
+    # First run: cache miss
+    res1 = run_audit(
+        platform=platform,
+        config=cfg,
+        base="main",
+        head="feature/vulnerable",
+        mock=True,
+        repo_root=git_fixture_repo,
+        enable_cache=True,
+    )
+    assert res1.verdict == Verdict.FAIL
+    assert res1.metadata.extra.get("cached_chunk_hits") == 0
+
+    # Second run on unchanged code: cache hit!
+    res2 = run_audit(
+        platform=platform,
+        config=cfg,
+        base="main",
+        head="feature/vulnerable",
+        mock=True,
+        repo_root=git_fixture_repo,
+        enable_cache=True,
+    )
+    assert res2.verdict == Verdict.FAIL
+    assert res2.metadata.extra.get("cached_chunk_hits", 0) > 0
+
+
+@respx.mock
+def test_audit_failure_triggers_all_notifications(
+    git_fixture_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify that a failed audit sends Slack, Teams, and Email notifications."""
+    slack_url = "https://hooks.slack.com/services/T/B/X"
+    teams_url = "https://custom.webhook.office.com/teams"
+
+    slack_route = respx.post(slack_url).mock(return_value=httpx.Response(200, text="ok"))
+    teams_route = respx.post(teams_url).mock(return_value=httpx.Response(200, text="ok"))
+
+    monkeypatch.setenv("GK_SLACK_WEBHOOK", slack_url)
+    monkeypatch.setenv("GK_TEAMS_WEBHOOK", teams_url)
+    monkeypatch.setenv("GK_SMTP_HOST", "smtp.example.com")
+
+    platform = LocalPlatform(
+        base="main",
+        head="feature/vulnerable",
+        repo_root=git_fixture_repo,
+    )
+    cfg = GatekeeperConfig()
+    cfg.review.target_branches = ["main"]
+    cfg.notify.on = ["fail", "error"]
+
+    mock_smtp_instance = MagicMock()
+    mock_smtp_cls = MagicMock(return_value=mock_smtp_instance)
+    mock_smtp_instance.__enter__.return_value = mock_smtp_instance
+    monkeypatch.setattr("smtplib.SMTP", mock_smtp_cls)
+
+    res = run_audit(
+        platform=platform,
+        config=cfg,
+        base="main",
+        head="feature/vulnerable",
+        mock=True,
+        repo_root=git_fixture_repo,
+    )
+
+    assert res.verdict == Verdict.FAIL
+    # Verify Slack notification sent
+    assert slack_route.called
+    slack_body = json.loads(slack_route.calls.last.request.read().decode("utf-8"))
+    assert "FAIL" in slack_body["text"]
+
+    # Verify Teams Adaptive Card notification sent
+    assert teams_route.called
+    teams_body = json.loads(teams_route.calls.last.request.read().decode("utf-8"))
+    assert teams_body["attachments"][0]["contentType"] == "application/vnd.microsoft.card.adaptive"
+
+    # Verify Email notification sent
+    assert mock_smtp_instance.send_message.called

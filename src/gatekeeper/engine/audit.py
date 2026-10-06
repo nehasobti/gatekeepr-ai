@@ -12,6 +12,7 @@ from gatekeeper.diff.parser import DiffResult, parse_diff
 from gatekeeper.engine.merge import merge_and_dedupe_findings
 from gatekeeper.engine.rules import evaluate_gate
 from gatekeeper.engine.suppressions import apply_suppressions
+from gatekeeper.llm.cache import ChunkResultCache
 from gatekeeper.llm.client import PROMPT_VERSION, LLMClient
 from gatekeeper.llm.mock import MockLLMClient
 from gatekeeper.models import (
@@ -21,8 +22,10 @@ from gatekeeper.models import (
     Finding,
     Verdict,
 )
+from gatekeeper.notify import dispatch_notifications
 from gatekeeper.platforms.base import Platform
 from gatekeeper.report import print_console_report, write_all_reports
+from gatekeeper.security.redactor import redact_text
 
 
 def run_audit(
@@ -33,6 +36,7 @@ def run_audit(
     dry_run: bool = False,
     mock: bool = False,
     repo_root: Path | None = None,
+    enable_cache: bool = True,
 ) -> AuditResult:
     """Run full audit pipeline."""
     start_time_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -191,16 +195,46 @@ def run_audit(
             print_console_report(res)
             return res
 
-    # Stage 6: Claude passes (security, quality)
+    # Result Cache setup
+    cache = ChunkResultCache(cache_dir=root / ".gatekeeper" / "cache")
+    cached_hits_count = 0
+
+    # Stage 6: Claude passes (security, quality) with Secret Redaction and Caching
     passes = config.review.passes or ["security", "quality"]
     raw_findings_by_pass: list[list[Finding]] = []
 
-    def review_task(chunk: DiffChunk, p_name: str) -> list[Finding]:
-        return llm.review_chunk(
-            chunk_content=chunk.content,
+    def review_task(chunk: DiffChunk, p_name: str) -> tuple[list[Finding], bool]:
+        # Redact secrets before cache lookup or LLM evaluation
+        safe_content = redact_text(chunk.content)
+
+        if enable_cache:
+            cached_findings = cache.get(
+                chunk_content=safe_content,
+                pass_name=p_name,
+                prompt_version=PROMPT_VERSION,
+                model_name=config.model.name,
+                custom_rules=config.review.custom_rules,
+            )
+            if cached_findings is not None:
+                return cached_findings, True
+
+        fresh_findings = llm.review_chunk(
+            chunk_content=safe_content,
             pass_name=p_name,
             valid_lines=chunk.file_valid_lines,
         )
+
+        if enable_cache:
+            cache.put(
+                chunk_content=safe_content,
+                pass_name=p_name,
+                prompt_version=PROMPT_VERSION,
+                model_name=config.model.name,
+                findings=fresh_findings,
+                custom_rules=config.review.custom_rules,
+            )
+
+        return fresh_findings, False
 
     # Concurrently execute chunks (max 4 concurrent)
     tasks: list[tuple[DiffChunk, str]] = [(chunk, p_name) for p_name in passes for chunk in chunks]
@@ -209,7 +243,9 @@ def run_audit(
         future_to_task = {executor.submit(review_task, ch, p): (ch, p) for ch, p in tasks}
         for future in concurrent.futures.as_completed(future_to_task):
             try:
-                pass_findings = future.result()
+                pass_findings, was_cached = future.result()
+                if was_cached:
+                    cached_hits_count += 1
                 raw_findings_by_pass.append(pass_findings)
             except Exception as e:
                 if config.gate.fail_on_llm_error:
@@ -257,7 +293,10 @@ def run_audit(
         estimated_cost_usd=tracker.calculate_cost_usd(),
         skipped_files=diff_res.skipped_files,
         dropped_findings_count=len(dropped_suppressed),
-        extra={"gate_violations": violations},
+        extra={
+            "gate_violations": violations,
+            "cached_chunk_hits": cached_hits_count,
+        },
     )
 
     result = AuditResult(
@@ -269,9 +308,13 @@ def run_audit(
 
     # Stage 11: Publish
     print_console_report(result)
-    write_all_reports(result, config.outputs.output_dir, config.outputs.formats)
+    reports_written = write_all_reports(result, config.outputs.output_dir, config.outputs.formats)
     platform.post_summary(result)
     platform.post_inline_comments(result)
     platform.set_status(result)
+
+    # Dispatch Notifications
+    html_path = reports_written.get("html")
+    dispatch_notifications(result, config.notify, html_report_path=html_path)
 
     return result
