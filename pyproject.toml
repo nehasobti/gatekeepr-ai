@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gatekeeper-ai"
-version = "0.1.0"
+version = "1.0.0"
 description = "AI-powered quality gate for pull requests"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -32,6 +32,7 @@ dev = [
     "ruff>=0.4.0",
     "mypy>=1.10.0",
     "types-pyyaml>=6.0.12.20240311",
+    "mkdocs-material>=9.5.0",
 ]
 
 [project.scripts]

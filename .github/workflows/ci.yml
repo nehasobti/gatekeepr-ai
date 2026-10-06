@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    name: Lint, Type Check & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install Dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Ruff Linter & Formatter
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Mypy Strict Type Checking
+        run: uv run mypy src tests
+
+      - name: Run Tests with Coverage
+        run: uv run pytest --cov=src/gatekeeper --cov-report=xml --cov-report=term-missing
+
+      - name: Verify Coverage Threshold (>= 85%)
+        run: uv run pytest --cov=src/gatekeeper --cov-fail-under=85
+
+      - name: Build Docker Container
+        run: docker build -t gatekeeper-ai:ci .

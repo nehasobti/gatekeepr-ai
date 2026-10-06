@@ -1,0 +1,58 @@
+site_name: Gatekeeper AI Documentation
+site_description: Automated AI Quality Gate for Pull Requests with Claude & Static Scanners
+site_author: Gatekeeper AI
+repo_url: https://github.com/gatekeeper-ai/gatekeeper-ai
+repo_name: gatekeeper-ai
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+    - content.code.annotate
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+
+nav:
+  - Home: index.md
+  - Quick Starts:
+      - GitHub Actions: quickstart_github.md
+      - Bitbucket Pipelines: quickstart_bitbucket.md
+  - Guides:
+      - Configuration Reference: configuration.md
+      - Severity & Gate Rules: rules.md
+      - Suppressions & Baseline: suppressions.md
+      - Static Scanners & Triage: scanners.md
+      - Notifications: notifications.md
+      - Reports & Formats: reports.md
+      - Security & Privacy: security.md
+      - Cost Guide & Optimization: costs.md
+      - Custom Rules & Prompts: custom_rules.md
+      - Troubleshooting: troubleshooting.md
+  - Reference:
+      - Changelog: changelog.md
+      - Architecture Decisions: decisions.md

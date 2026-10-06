@@ -87,7 +87,8 @@ class Confidence(StrEnum):
 class Category(StrEnum):
     INJECTION = "injection"
     AUTH = "auth"
-    SECRES = "secrets"
+    SECRETS = "secrets"
+    SECRES = "secrets"  # backwards compatibility alias
     CRYPTO = "crypto"
     XSS = "xss"
     SSRF = "ssrf"
@@ -140,17 +141,23 @@ class Finding(BaseModel):
     )
 
     @classmethod
+    def compute_fingerprint(cls, rule: str, file: str, snippet: str = "") -> str:
+        """Compute stable fingerprint for a scanner rule."""
+        norm = re.sub(r"\s+", " ", f"{rule}:{file}:{snippet}").strip().lower()
+        return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16]
+
+    @classmethod
     def create(
         cls,
         file: str,
         start_line: int,
         end_line: int,
         severity: Severity,
-        confidence: Confidence,
         category: Category,
         title: str,
         explanation: str,
         suggested_fix: str,
+        confidence: Confidence = Confidence.HIGH,
         owasp: str | None = None,
         cwe: str | None = None,
         source: list[str] | None = None,
@@ -205,7 +212,7 @@ class AuditSummary(BaseModel):
 
 
 class AuditMetadata(BaseModel):
-    tool_version: str = "0.1.0"
+    tool_version: str = "1.0.0"
     prompt_version: str = "1.0.0"
     model: str = "claude-sonnet-latest"
     config_hash: str = ""

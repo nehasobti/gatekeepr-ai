@@ -47,6 +47,21 @@ class MockLLMClient:
 
         return findings
 
+    def triage_findings(
+        self,
+        findings: list[Finding],
+        snippets: dict[str, str],
+    ) -> list[Finding]:
+        """Triage mock findings: drop findings with 'false-positive' or 'dismiss' in text."""
+        self.tracker.add(input_tokens=len(findings) * 50, output_tokens=30)
+        triaged: list[Finding] = []
+        for f in findings:
+            snippet = snippets.get(f.id, "")
+            combined = f"{f.explanation} {f.title} {snippet}".lower()
+            if "false-positive" not in combined and "dismiss" not in combined:
+                triaged.append(f)
+        return triaged
+
     def _scan_security_patterns(
         self,
         chunk_content: str,
@@ -119,7 +134,7 @@ class MockLLMClient:
                 or "sk-ant-" in code_line
             ):
                 f_id = generate_finding_id(
-                    curr_file, Category.SECRES, "Hardcoded sensitive credential"
+                    curr_file, Category.SECRETS, "Hardcoded sensitive credential"
                 )
                 findings.append(
                     Finding(
@@ -129,7 +144,7 @@ class MockLLMClient:
                         end_line=line_no,
                         severity=Severity.HIGH,
                         confidence=Confidence.HIGH,
-                        category=Category.SECRES,
+                        category=Category.SECRETS,
                         owasp="A02:2021 Cryptographic Failures",
                         cwe="CWE-798",
                         title="Hardcoded API secret or credential",

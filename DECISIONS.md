@@ -43,3 +43,13 @@ This document tracks decisions made during the implementation of Gatekeeper AI a
 - **Date**: 2026-10-06
 - **Decision**: Implement Slack Block Kit webhooks, Microsoft Teams Adaptive Cards webhooks, and standard SMTP TLS email with attached HTML reports. Conditioned on status matching `notify.on` (`fail`, `error`, `pass`).
 - **Rationale**: Provides actionable, cross-team security status updates to Slack channels, Microsoft Teams rooms, and security lead inboxes upon audit completion.
+
+### 9. Static Scanner Orchestration and Fallback Strategies
+- **Date**: 2026-10-06
+- **Decision**: Implement standalone scanner runners for Semgrep, Bandit, Gitleaks, and SonarQube with automatic line filtering (`filter_to_changed_lines`). Provide built-in pattern detection fallback for Gitleaks when binary is not installed in the runner PATH.
+- **Rationale**: Ensures zero-dependency execution across environments without crashing the pipeline when external binaries are not present.
+
+### 10. LLM Triage for Static Analysis Findings
+- **Date**: 2026-10-06
+- **Decision**: Use Claude via prompt `triage.md` and forced tool call `submit_triage` to evaluate static scanner findings against local code snippets and filter out false positives before gate thresholds are evaluated.
+- **Rationale**: Resolves the classic developer complaint about noisy static scanners blocking pull requests on false positive reports.

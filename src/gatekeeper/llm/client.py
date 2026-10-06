@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +27,8 @@ from gatekeeper.models import (
     Severity,
     generate_finding_id,
 )
+
+logger = logging.getLogger("gatekeeper.llm.client")
 
 PROMPT_VERSION = "1.0.0"
 
@@ -114,6 +118,29 @@ SUBMIT_FINDINGS_TOOL: dict[str, Any] = {
             }
         },
         "required": ["findings"],
+    },
+}
+
+SUBMIT_TRIAGE_TOOL: dict[str, Any] = {
+    "name": "submit_triage",
+    "description": "Submit triage verdicts indicating whether scanner findings are true positives or false positives.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "verdicts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "finding_id": {"type": "string"},
+                        "is_valid": {"type": "boolean"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["finding_id", "is_valid", "reason"],
+                },
+            }
+        },
+        "required": ["verdicts"],
     },
 }
 
@@ -269,6 +296,85 @@ class LLMClient:
                                 findings.append(parsed)
 
         return findings
+
+    def triage_findings(
+        self,
+        findings: list[Finding],
+        snippets: dict[str, str],
+    ) -> list[Finding]:
+        """Triage static analysis findings with Claude to filter out false positives."""
+        if not findings:
+            return []
+
+        if self.tracker.input_tokens >= self.config.budget.max_input_tokens_per_run:
+            if self.config.budget.on_budget_exceeded == "fail":
+                raise RuntimeError("Token budget exceeded limit")
+            elif self.config.budget.on_budget_exceeded == "skip_remaining":
+                return findings
+
+        system_prompt = self.render_system_prompt("triage")
+        items_payload = [
+            {
+                "finding_id": f.id,
+                "file": f.file,
+                "line": f.start_line,
+                "title": f.title,
+                "explanation": f.explanation,
+                "code_context": snippets.get(f.id, ""),
+            }
+            for f in findings
+        ]
+
+        user_message = "Please triage the following static scanner findings:\n\n" + json.dumps(
+            items_payload, indent=2
+        )
+
+        system_blocks: list[Any] = [
+            {
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+        messages_payload: list[Any] = [{"role": "user", "content": user_message}]
+        tools_payload: list[Any] = [SUBMIT_TRIAGE_TOOL]
+        tool_choice_payload: dict[str, Any] = {"type": "tool", "name": "submit_triage"}
+
+        try:
+            response = self.client.messages.create(  # type: ignore[call-overload]
+                model=self.config.model.name,
+                max_tokens=self.config.model.max_output_tokens,
+                system=system_blocks,
+                messages=messages_payload,
+                tools=tools_payload,
+                tool_choice=tool_choice_payload,
+            )
+            cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+            cache_write = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+            self.tracker.add(
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+                cached_read=cache_read,
+                cached_creation=cache_write,
+            )
+
+            valid_ids: set[str] = set()
+            for block in response.content:
+                if (
+                    block.type == "tool_use"
+                    and block.name == "submit_triage"
+                    and isinstance(block.input, dict)
+                ):
+                    verdicts = block.input.get("verdicts", [])
+                    if isinstance(verdicts, list):
+                        for v in verdicts:
+                            if isinstance(v, dict) and v.get("is_valid") is True:
+                                valid_ids.add(str(v.get("finding_id")))
+
+            return [f for f in findings if f.id in valid_ids]
+        except Exception as e:
+            logger.warning(f"LLM triage failed: {e}. Retaining original findings.")
+            return findings
 
     def _parse_finding_item(
         self,

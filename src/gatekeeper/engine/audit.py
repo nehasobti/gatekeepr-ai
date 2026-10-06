@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 import time
 from pathlib import Path
 
+from gatekeeper import __version__
 from gatekeeper.config import GatekeeperConfig
 from gatekeeper.diff.chunker import DiffChunk, chunk_diff
 from gatekeeper.diff.parser import DiffResult, parse_diff
 from gatekeeper.engine.merge import merge_and_dedupe_findings
 from gatekeeper.engine.rules import evaluate_gate
 from gatekeeper.engine.suppressions import apply_suppressions
+from gatekeeper.engine.triage import triage_scanner_findings
 from gatekeeper.llm.cache import ChunkResultCache
 from gatekeeper.llm.client import PROMPT_VERSION, LLMClient
 from gatekeeper.llm.mock import MockLLMClient
@@ -25,7 +28,10 @@ from gatekeeper.models import (
 from gatekeeper.notify import dispatch_notifications
 from gatekeeper.platforms.base import Platform
 from gatekeeper.report import print_console_report, write_all_reports
+from gatekeeper.scanners import run_all_scanners
 from gatekeeper.security.redactor import redact_text
+
+logger = logging.getLogger("gatekeeper.engine.audit")
 
 
 def run_audit(
@@ -55,7 +61,7 @@ def run_audit(
     ):
         duration = time.monotonic() - start_monotonic
         meta = AuditMetadata(
-            tool_version="0.1.0",
+            tool_version=__version__,
             prompt_version=PROMPT_VERSION,
             model=config.model.name,
             config_hash=config.compute_hash(),
@@ -83,6 +89,7 @@ def run_audit(
     except Exception as e:
         duration = time.monotonic() - start_monotonic
         meta = AuditMetadata(
+            tool_version=__version__,
             start_time=start_time_iso,
             duration_seconds=round(duration, 3),
         )
@@ -98,7 +105,7 @@ def run_audit(
         # Clean diff / no changes
         duration = time.monotonic() - start_monotonic
         meta = AuditMetadata(
-            tool_version="0.1.0",
+            tool_version=__version__,
             prompt_version=PROMPT_VERSION,
             model=config.model.name,
             config_hash=config.compute_hash(),
@@ -142,7 +149,7 @@ def run_audit(
     if dry_run:
         duration = time.monotonic() - start_monotonic
         meta = AuditMetadata(
-            tool_version="0.1.0",
+            tool_version=__version__,
             prompt_version=PROMPT_VERSION,
             model=config.model.name,
             config_hash=config.compute_hash(),
@@ -180,7 +187,7 @@ def run_audit(
             verdict = Verdict.PASS if not config.gate.fail_on_llm_error else Verdict.ERROR
             duration = time.monotonic() - start_monotonic
             meta = AuditMetadata(
-                tool_version="0.1.0",
+                tool_version=__version__,
                 prompt_version=PROMPT_VERSION,
                 model=config.model.name,
                 config_hash=config.compute_hash(),
@@ -199,12 +206,39 @@ def run_audit(
     cache = ChunkResultCache(cache_dir=root / ".gatekeeper" / "cache")
     cached_hits_count = 0
 
+    # Stage 5: Static scanners
+    changed_file_paths = [f.path for f in diff_res.files]
+    changed_lines_by_file = {f.path: f.changed_line_numbers for f in diff_res.files}
+    scanner_findings: list[Finding] = []
+    try:
+        scanner_findings = run_all_scanners(
+            config=config.scanners,
+            changed_files=changed_file_paths,
+            repo_root=root,
+            changed_lines_by_file=changed_lines_by_file,
+            pr_id=context.pr_id,
+        )
+    except Exception as e:
+        logger.error(f"Scanner stage error: {e}")
+        if config.gate.fail_on_scanner_error:
+            duration = time.monotonic() - start_monotonic
+            res = AuditResult(
+                verdict=Verdict.ERROR,
+                error_message=f"Scanner execution failed: {e}",
+                metadata=AuditMetadata(
+                    tool_version=__version__,
+                    start_time=start_time_iso,
+                    duration_seconds=round(duration, 3),
+                ),
+            )
+            print_console_report(res)
+            return res
+
     # Stage 6: Claude passes (security, quality) with Secret Redaction and Caching
     passes = config.review.passes or ["security", "quality"]
     raw_findings_by_pass: list[list[Finding]] = []
 
     def review_task(chunk: DiffChunk, p_name: str) -> tuple[list[Finding], bool]:
-        # Redact secrets before cache lookup or LLM evaluation
         safe_content = redact_text(chunk.content)
 
         if enable_cache:
@@ -236,7 +270,6 @@ def run_audit(
 
         return fresh_findings, False
 
-    # Concurrently execute chunks (max 4 concurrent)
     tasks: list[tuple[DiffChunk, str]] = [(chunk, p_name) for p_name in passes for chunk in chunks]
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, max(1, len(tasks)))) as executor:
@@ -254,6 +287,7 @@ def run_audit(
                         verdict=Verdict.ERROR,
                         error_message=f"Review pass failed: {e}",
                         metadata=AuditMetadata(
+                            tool_version=__version__,
                             start_time=start_time_iso,
                             duration_seconds=round(duration, 3),
                         ),
@@ -261,8 +295,18 @@ def run_audit(
                     print_console_report(res)
                     return res
 
+    # Stage 7: Triage scanner findings with LLM
+    confirmed_scanner_findings: list[Finding] = scanner_findings
+    if scanner_findings and config.scanners.triage_with_llm:
+        confirmed_scanner_findings, _dismissed = triage_scanner_findings(
+            findings=scanner_findings,
+            repo_root=root,
+            llm=llm,
+        )
+
     # Stage 8: Merge and dedupe
-    merged_findings = merge_and_dedupe_findings(raw_findings_by_pass)
+    all_findings_lists = [*raw_findings_by_pass, confirmed_scanner_findings]
+    merged_findings = merge_and_dedupe_findings(all_findings_lists)
 
     # Stage 9: Suppress
     active_findings, dropped_suppressed = apply_suppressions(
@@ -277,7 +321,7 @@ def run_audit(
     duration = time.monotonic() - start_monotonic
     tracker = llm.tracker
     meta = AuditMetadata(
-        tool_version="0.1.0",
+        tool_version=__version__,
         prompt_version=PROMPT_VERSION,
         model=config.model.name,
         config_hash=config.compute_hash(),
@@ -296,6 +340,8 @@ def run_audit(
         extra={
             "gate_violations": violations,
             "cached_chunk_hits": cached_hits_count,
+            "scanner_findings_count": len(scanner_findings),
+            "triaged_scanner_findings_count": len(confirmed_scanner_findings),
         },
     )
 

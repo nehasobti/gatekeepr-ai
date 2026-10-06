@@ -3,7 +3,7 @@
 import json
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -184,6 +184,55 @@ def test_audit_rerun_on_unchanged_code_uses_cache(git_fixture_repo: Path) -> Non
     )
     assert res2.verdict == Verdict.FAIL
     assert res2.metadata.extra.get("cached_chunk_hits", 0) > 0
+
+
+def test_audit_with_scanners_and_triage(git_fixture_repo: Path) -> None:
+    """Verify that running audit executes scanners and triage."""
+    platform = LocalPlatform(
+        base="main",
+        head="feature/vulnerable",
+        repo_root=git_fixture_repo,
+    )
+    cfg = GatekeeperConfig()
+    cfg.review.target_branches = ["main"]
+    cfg.scanners.gitleaks.enabled = True
+    cfg.scanners.triage_with_llm = True
+
+    res = run_audit(
+        platform=platform,
+        config=cfg,
+        base="main",
+        head="feature/vulnerable",
+        mock=True,
+        repo_root=git_fixture_repo,
+    )
+    assert res.verdict == Verdict.FAIL
+    assert "scanner_findings_count" in res.metadata.extra
+
+
+def test_audit_scanner_error_handling(git_fixture_repo: Path) -> None:
+    """Verify that scanner errors cause ERROR if fail_on_scanner_error is True."""
+    platform = LocalPlatform(
+        base="main",
+        head="feature/vulnerable",
+        repo_root=git_fixture_repo,
+    )
+    cfg = GatekeeperConfig()
+    cfg.review.target_branches = ["main"]
+    cfg.gate.fail_on_scanner_error = True
+
+    with patch(
+        "gatekeeper.engine.audit.run_all_scanners", side_effect=RuntimeError("Scanner crash")
+    ):
+        res = run_audit(
+            platform=platform,
+            config=cfg,
+            base="main",
+            head="feature/vulnerable",
+            mock=True,
+            repo_root=git_fixture_repo,
+        )
+        assert res.verdict == Verdict.ERROR
 
 
 @respx.mock
